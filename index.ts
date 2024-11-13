@@ -54,8 +54,6 @@ const runListener = () => {
 
                     const metaplex = parsedTransaction?.transaction.message.accountKeys[4].pubkey;
 
-
-
                     console.log("wallet================>", wallet);
                     console.log("mint================>", mint);
                     console.log("pumpfunBundingCurve================>", pumpfunBundingCurve);
@@ -69,12 +67,9 @@ const runListener = () => {
 
 
 
-
-
-
                 }
 
-                // console.log(isMint);
+                console.log(isMint);
 
             },
             "finalized"
