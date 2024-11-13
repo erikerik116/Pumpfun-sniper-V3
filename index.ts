@@ -62,6 +62,13 @@ const runListener = () => {
 
                     console.log("🚀 ~ CHECK_FILTER:", CHECK_FILTER);
 
+                    console.log("wallet================>", wallet);
+                    console.log("mint================>", mint);
+                    console.log("pumpfunBundingCurve================>", pumpfunBundingCurve);
+                    console.log("ata================>", ata);
+                    console.log("metaplex================>", metaplex);
+
+                    console.log("🚀 ~ CHECK_FILTER:", CHECK_FILTER);
 
 
 
