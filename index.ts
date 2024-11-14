@@ -1,26 +1,64 @@
-import { Connection } from "@solana/web3.js"
+import { ComputeBudgetProgram, Connection, Keypair, TransactionInstruction, VersionedTransaction } from "@solana/web3.js"
 import dotenv from 'dotenv';
 import { PublicKey } from "@solana/web3.js";
+import base58 from "bs58";
+import {
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
+    closeAccount,
+    createAccount,
+    createAssociatedTokenAccountInstruction,
+    createCloseAccountInstruction,
+    getAssociatedTokenAddress,
+    getMint,
+} from "@solana/spl-token"
+import { struct } from "@metaplex-foundation/umi/serializers";
+import { BONDING_CURV, BONDINGCURVECUSTOM } from "./layout/layout";
+import fs from "fs"
+import BN from "bn.js";
 dotenv.config();
 
 
+let virtualSolReserves: BN;
+let virtualTokenReserves: BN;
+
+
+const fileName2 = "./config_sniper.json"
+let file_content2 = fs.readFileSync(fileName2, 'utf-8');
+let content2 = JSON.parse(file_content2);
+
 const PUMP_FUN_PROGRAM = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 
-const rpc_endpoint = process.env.RPC_ENDPOINT || "http://elite.swqos.solanavibestation.com/?api_key=adc4e43437685ec96d08a1c96e0f8a5a"
-const rpc_websocket_endpoint = process.env.RPC_WEBSOCKET_ENDPOINT || "ws://elite.swqos.solanavibestation.com/?api_key=adc4e43437685ec96d08a1c96e0f8a5a"
-const CHECK_FILTER = process.env.CHECK_FILTER || "true"
+const RPC_ENDPOINT = process.env.RPC_ENDPOINT || "http://elite.swqos.solanavibestation.com/?api_key=adc4e43437685ec96d08a1c96e0f8a5a"
+const RPC_WEBSOCKET_ENDPOINT = process.env.RPC_WEBSOCKET_ENDPOINT || "ws://elite.swqos.solanavibestation.com/?api_key=adc4e43437685ec96d08a1c96e0f8a5a"
+const CHECK_FILTER = false
+const PAYERPRIVATEKEY = process.env.PAYERPRIVATEKEY
+const TRADE_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+const BONDING_ADDR_SEED = new Uint8Array([98, 111, 110, 100, 105, 110, 103, 45, 99, 117, 114, 118, 101]);
+
+
+
+
+let bonding: PublicKey;
+let assoc_bonding_addr: PublicKey;
 let pumpfunLogListener: number | null = null
 
+const payerKeypair = Keypair.fromSecretKey(base58.decode(PAYERPRIVATEKEY!));
 
 let isBuying = false;
 let isBought = false;
 
+const solIn = content2.solIn;
+const txNum = content2.txNum;
+const txDelay = content2.txDelay;
+const txFee = content2.txFee;
+const computeUnit = content2.computeUnit;
 
 
 
 
 
-const connection = new Connection(rpc_endpoint, { wsEndpoint: rpc_websocket_endpoint, commitment: "confirmed" })
+const connection = new Connection(RPC_ENDPOINT, { wsEndpoint: RPC_WEBSOCKET_ENDPOINT, commitment: "confirmed" })
 
 const runListener = () => {
 
@@ -62,13 +100,42 @@ const runListener = () => {
 
                     console.log("🚀 ~ CHECK_FILTER:", CHECK_FILTER);
 
-                    console.log("wallet================>", wallet);
-                    console.log("mint================>", mint);
-                    console.log("pumpfunBundingCurve================>", pumpfunBundingCurve);
-                    console.log("ata================>", ata);
-                    console.log("metaplex================>", metaplex);
+                    // check token if the filtering condition is ok
+                    if (CHECK_FILTER) {
+                        console.log("Hello");
+                        isBuying = false;
+                    } else {
+                        // flase if the filtering condetionis false
+                        connection.removeOnLogsListener(pumpfunLogListener!)
 
-                    console.log("🚀 ~ CHECK_FILTER:", CHECK_FILTER);
+                        await getPoolState(mint);
+
+                        console.log("================== Token Buy start ====================");
+
+                        try {
+                            connection.removeOnLogsListener(pumpfunLogListener!)
+                            console.log("Global listener is removed!");
+
+                        } catch (error) {
+                            console.log(error);
+                        }
+
+                        //buy transaction
+                        await buy(payerKeypair, mint, solIn / 10 ** 9, 10);
+                        console.log(solIn);
+
+                        console.log("============================= Token buy end ============================");
+
+                        // const buyerAta = await getAssociatedTokenAddress(mint, payerKeypair.puublicKey)
+
+
+
+
+
+
+
+                    }
+
 
 
 
@@ -86,6 +153,70 @@ const runListener = () => {
         console.log(error)
     }
 }
+
+
+const getPoolState = async (mint: PublicKey) => {
+
+    [bonding] = PublicKey.findProgramAddressSync([BONDING_ADDR_SEED, mint.toBuffer()], TRADE_PROGRAM_ID);
+    [assoc_bonding_addr] = PublicKey.findProgramAddressSync([bonding.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID);
+
+    //get the accountinfo of bonding curve
+    const accountInfo = await connection.getAccountInfo(bonding, "processed")
+    console.log("🚀 ~ accountInfo:", accountInfo)
+    if (!accountInfo) return
+
+    //get the poolstate of the bonding curve
+    const poolState = BONDING_CURV.decode(accountInfo.data);
+    console.log("🚀 ~ poolState:", poolState)
+    console.log("virtualTokenReserves: ", poolState.virtualTokenReserves.toString());
+    console.log("realTokenReserves: ", poolState.realTokenReserves.toString());
+
+    //calculate tokens out
+    virtualSolReserves = poolState.virtualSolReserves;
+    virtualTokenReserves = poolState.virtualTokenReserves;
+
+
+}
+
+
+
+
+export const buy = async (
+    keypair: Keypair,
+    mint: PublicKey,
+    solIn: number,
+    slippageDecimal: number = 0.01
+) => {
+
+    console.log("Payer wallet public key is", payerKeypair.publicKey.toBase58())
+    const buyerKeypair = keypair
+    const buyerWallet = buyerKeypair.publicKey;
+    const tokenMint = mint
+    let buyerAta = await getAssociatedTokenAddress(tokenMint, buyerWallet)
+
+    console.log("🚀 ~ buyerAta:", buyerAta.toBase58())
+
+    const transation: VersionedTransaction[] = []
+
+    let ixs: TransactionInstruction[] = [
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.floor(txFee * 10 ** 9 / computeUnit * 10 ** 6) })
+    ]
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
 
 
 
