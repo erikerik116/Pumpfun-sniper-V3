@@ -1,4 +1,4 @@
-import { ComputeBudgetProgram, Connection, Keypair, TransactionInstruction, VersionedTransaction } from "@solana/web3.js"
+import { ComputeBudgetProgram, Connection, Keypair, LAMPORTS_PER_SOL, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js"
 import dotenv from 'dotenv';
 import { PublicKey } from "@solana/web3.js";
 import base58 from "bs58";
@@ -9,14 +9,48 @@ import {
     createAccount,
     createAssociatedTokenAccountInstruction,
     createCloseAccountInstruction,
+    createExecuteInstruction,
     getAssociatedTokenAddress,
     getMint,
 } from "@solana/spl-token"
+import {
+    GLOBAL,
+    FEE_RECIPIENT,
+    SYSTEM_PROGRAM,
+    TOKEN_PROGRAM,
+    RENT,
+    PUMP_FUN_ACCOUNT,
+    PUMP_FUN_PROGRAM,
+    // CHECK_FILTER,
+    // JITO_MODE,
+    ASSOC_TOKEN_ACC_PROG,
+} from "./src/contants";
 import { struct } from "@metaplex-foundation/umi/serializers";
 import { BONDING_CURV, BONDINGCURVECUSTOM } from "./layout/layout";
 import fs from "fs"
 import BN from "bn.js";
+import { isSigner, publicKey } from "@metaplex-foundation/umi";
+import { Logger } from "@raydium-io/raydium-sdk";
 dotenv.config();
+
+import pino from "pino";
+import { clearLine } from "readline";
+
+const transport = pino.transport({
+    target: 'pino-pretty',
+});
+
+export const logger = pino(
+    {
+        level: 'info',
+        redact: ['poolKeys'],
+        serializers: {
+            error: pino.stdSerializers.err,
+        },
+        base: undefined,
+    },
+    transport,
+);
 
 
 let virtualSolReserves: BN;
@@ -27,7 +61,7 @@ const fileName2 = "./config_sniper.json"
 let file_content2 = fs.readFileSync(fileName2, 'utf-8');
 let content2 = JSON.parse(file_content2);
 
-const PUMP_FUN_PROGRAM = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+
 
 const RPC_ENDPOINT = process.env.RPC_ENDPOINT || "http://elite.swqos.solanavibestation.com/?api_key=adc4e43437685ec96d08a1c96e0f8a5a"
 const RPC_WEBSOCKET_ENDPOINT = process.env.RPC_WEBSOCKET_ENDPOINT || "ws://elite.swqos.solanavibestation.com/?api_key=adc4e43437685ec96d08a1c96e0f8a5a"
@@ -47,6 +81,7 @@ const payerKeypair = Keypair.fromSecretKey(base58.decode(PAYERPRIVATEKEY!));
 
 let isBuying = false;
 let isBought = false;
+let buyPrice: number;
 
 const solIn = content2.solIn;
 const txNum = content2.txNum;
@@ -121,7 +156,7 @@ const runListener = () => {
                         }
 
                         //buy transaction
-                        await buy(payerKeypair, mint, solIn / 10 ** 9, 10);
+                        // await buy(payerKeypair, mint, solIn / 10 ** 9, 10);
                         console.log(solIn);
 
                         console.log("============================= Token buy end ============================");
@@ -196,17 +231,130 @@ export const buy = async (
 
     console.log("🚀 ~ buyerAta:", buyerAta.toBase58())
 
-    const transation: VersionedTransaction[] = []
+    try {
+        const transation: VersionedTransaction[] = []
 
-    let ixs: TransactionInstruction[] = [
-        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.floor(txFee * 10 ** 9 / computeUnit * 10 ** 6) })
-    ]
+        let ixs: TransactionInstruction[] = [
+            ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.floor(txFee * 10 ** 9 / computeUnit * 10 ** 6) }),
+            ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnit })
+        ];
+
+        //Attempt to retrieve token account, otherwise create associated token account
+        try {
+            const buyerTokenAccountInfo = await connection.getAccountInfo(buyerAta)
+            if (!buyerTokenAccountInfo) {
+                ixs.push(
+                    createAssociatedTokenAccountInstruction(
+                        buyerWallet,
+                        buyerAta,
+                        buyerWallet,
+                        tokenMint,
+                    )
+                )
+            }
+        } catch (error) {
+            console.log(error)
+            return
+        }
+
+        //calculate sol and token
+
+        const solInLamports = solIn * LAMPORTS_PER_SOL;
+        console.log("🚀 ~ solInLamports:", solInLamports);
+        const tokenOut = Math.round(solInLamports * (virtualTokenReserves.div(virtualSolReserves)).toNumber());
+        console.log("🚀 ~ tokenOut:", tokenOut)
+
+
+        //calcuate the buy price of the token
+        buyPrice = (virtualSolReserves.div(virtualSolReserves)).toNumber();
+
+        const ATA_USER = buyerAta;
+        const USER = buyerWallet;
+        console.log("🚀 ~ buyerAta:", buyerAta.toBase58())
+        console.log("🚀 ~ buyerWallet:", buyerWallet.toBase58())
 
 
 
+        //     //Build account key list
+        //     const keys = [
+        //         { pubkey: GLOBAL, isSigner: false, isWritable: false },
+        //         { pubkey: FEE_RECIPIENT, isSigner: false, isWritable: true },
+        //         { pubkey: tokenMint, isSigner: false, isWritable: false },
+        //         { pubkey: bonding, isSigner: false, isWritable: true },
+        //         { pubkey: assoc_bonding_addr, isSigner: false, isWritable: true },
+        //         { pubkey: ATA_USER, isSigner: false, isWritable: true },
+        //         { pubkey: USER, isSigner: true, isWritable: true },
+        //         { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
+        //         { pubkey: TOKEN_PROGRAM, isSigner: false, isWritable: false },
+        //         { pubkey: RENT, isSigner: false, isWritable: false },
+        //         { pubkey: PUMP_FUN_ACCOUNT, isSigner: false, isWritable: false },
+        //         { pubkey: PUMP_FUN_PROGRAM, isSigner: false, isWritable: false }
+        //     ];
 
+        //     const calc_slippage_up = (sol_amount: number, slippage: number): number => {
+        //         const lamports = sol_amount * LAMPORTS_PER_SOL;
+        //         return Math.round(lamports * (1 + slippage));
+        //     }
+
+        //     const instruction_buf = Buffer.from('66063d1201daebea', 'hex');
+        //     const token_amount_buf = Buffer.alloc(8);
+        //     token_amount_buf.writeBigUInt64LE(BigInt(tokenOut), 0);
+        //     const slippage_buf = Buffer.alloc(8);
+        //     slippage_buf.writeBigUInt64LE(BigInt(calc_slippage_up(solInLamports, slippageDecimal)), 0);
+        //     const data = Buffer.concat([instruction_buf, token_amount_buf, slippage_buf]);
+
+        //     const swapInstruction = new TransactionInstruction({
+        //         keys: keys,
+        //         programId: PUMP_FUN_PROGRAM,
+        //         data: data
+        //     })
+
+        //     ixs.push(swapInstruction)
+
+        //     const blockhash = await connection.getLatestBlockhash()
+        //     const messageV0 = new TransactionMessage({
+        //         payerKey: buyerWallet,
+        //         recentBlockhash: blockhash.blockhash,
+        //         instructions: ixs,
+        //     }).compileToV0Message()
+        //     const transaction = new VersionedTransaction(messageV0)
+        //     transaction.sign([buyerKeypair])
+
+        //     const buySig = await execute(transaction, blockhash)
+        //     console.log(`Buy signature: https://solscan.io//transaction/${buySig}`)
+
+
+    } catch (error) {
+        logger.debug(error)
+        console.log(`Failed to buy token, ${mint}`)
+    }
+    console.log("=============checking the buy result====================")
+    let index = 0;
+    while (true) {
+        console.log("token sniping failed")
+        return
+
+    }
+    // try{
+    //     const tokenBalance = (await connection.getTokenAccountBalance(buyerAta)).value.uiAmount
+    //     if(tokenBalance && tokenBalance>0){
+    //         console.log("🚀 ~ tokenBalance:", tokenBalance)
+    //         isBought = true
+    //         break
+    //     }
+
+    // } catch(error){
+    //     index++
+    //     await sleep(txDelay * 1000)
+    // }
+
+    console.log('successful')
 
 }
+
+
+
+
 
 
 
